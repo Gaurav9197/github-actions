@@ -1,0 +1,99 @@
+name: Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["Python CI"]
+    types: [completed]
+    branches: [main, master]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ${{ vars.DOCKERHUB_USER }}/github-actions-dashboard:latest
+  CONTAINER: github-actions-dashboard
+  PORT: 5000
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            IMAGE="${{ env.IMAGE }}"
+            CONTAINER="${{ env.CONTAINER }}"
+            PORT="${{ env.PORT }}"
+
+            echo "==> Logging in to Docker Hub"
+            echo "${{ secrets.DOCKERHUB_SECRETS }}" | docker login -u "${{ vars.DOCKERHUB_USER }}" --password-stdin
+
+            echo "==> Pulling latest image"
+            docker pull "$IMAGE"
+
+            echo "==> Saving previous image ID for rollback"
+            OLD_IMAGE=$(docker inspect --format='{{.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+
+            echo "==> Stopping old container"
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm "$CONTAINER" 2>/dev/null || true
+
+            echo "==> Starting new container"
+            docker run -d \
+              --name "$CONTAINER" \
+              --restart unless-stopped \
+              -p "$PORT:5000" \
+              "$IMAGE"
+
+            echo "==> Waiting for health check"
+            HEALTHY=false
+            for i in $(seq 1 15); do
+              if curl -sf "http://localhost:$PORT/api/status" > /dev/null 2>&1; then
+                HEALTHY=true
+                break
+              fi
+              echo "    Attempt $i/15 — waiting 2s..."
+              sleep 2
+            done
+
+            if [ "$HEALTHY" = true ]; then
+              echo "==> Deploy succeeded — container is healthy"
+              docker logout
+              exit 0
+            fi
+
+            echo "==> Health check failed — rolling back"
+            docker logs "$CONTAINER" --tail 30
+
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm "$CONTAINER" 2>/dev/null || true
+
+            if [ -n "$OLD_IMAGE" ]; then
+              echo "==> Restarting previous image"
+              docker run -d \
+                --name "$CONTAINER" \
+                --restart unless-stopped \
+                -p "$PORT:5000" \
+                "$OLD_IMAGE"
+              echo "==> Rollback complete"
+            else
+              echo "==> No previous image to roll back to"
+            fi
+
+            docker logout
+            exit 1

@@ -1,11 +1,12 @@
 # GitHub Actions Dashboard
 
 ![CI](https://github.com/<OWNER>/<REPO>/actions/workflows/python-matrix.yml/badge.svg)
+![CD](https://github.com/<OWNER>/<REPO>/actions/workflows/deploy.yml/badge.svg)
 [![codecov](https://codecov.io/gh/<OWNER>/<REPO>/branch/main/graph/badge.svg)](https://codecov.io/gh/<OWNER>/<REPO>)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 
-A minimal Flask application with a production-grade CI pipeline built on GitHub Actions. Demonstrates linting, type checking, security scanning, multi-version testing, dependency auditing, and Docker build verification -- all in a single workflow.
+A minimal Flask application with a production-grade CI/CD pipeline built on GitHub Actions. Demonstrates linting, type checking, security scanning, multi-version testing, dependency auditing, Docker Hub publishing, and automated EC2 deployment with rollback.
 
 > **Replace `<OWNER>/<REPO>` in the badge URLs above with your GitHub username and repository name.**
 
@@ -23,7 +24,8 @@ A minimal Flask application with a production-grade CI pipeline built on GitHub 
 ├── .pre-commit-config.yaml         # Pre-commit hook configuration
 └── .github/
     └── workflows/
-        └── python-matrix.yml       # CI pipeline
+        ├── python-matrix.yml       # CI pipeline
+        └── deploy.yml              # CD pipeline (EC2 deploy)
 ```
 
 ## Quick Start
@@ -70,12 +72,10 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-## CI Pipeline
-
-The workflow (`python-matrix.yml`) runs on every push/PR to `main`/`master` and consists of 6 jobs:
+## CI/CD Pipeline
 
 ```
-push / PR
+push / PR to main
     │
     ├── lint              Ruff lint + format, mypy, bandit
     ├── pre-commit        All pre-commit hooks
@@ -83,8 +83,23 @@ push / PR
     ├── dependency-scan   pip-audit against known vulnerabilities
     ├── dependency-review PR-only diff review of new dependencies
     │
-    └── docker            Docker build test (runs after lint + test pass)
+    └── docker            Build & push to Docker Hub (after lint + test)
+                              │
+                              ▼
+                          deploy.yml
+                              │
+                              └── deploy        SSH into EC2, pull image,
+                                                restart container, health check,
+                                                auto-rollback on failure
 ```
+
+### CI (`python-matrix.yml`)
+
+Runs on every push/PR to `main`/`master`. Consists of 6 jobs.
+
+### CD (`deploy.yml`)
+
+Triggers automatically after CI succeeds on `main`/`master` via `workflow_run`. Deploys the latest Docker image to EC2.
 
 ### Key Features
 
@@ -96,9 +111,12 @@ push / PR
 | **Multi-version testing** | Python 3.11, 3.12, 3.13 matrix |
 | **Coverage enforcement** | Fails if coverage drops below 80% |
 | **Coverage reporting** | Codecov with PR annotations |
-| **Docker verification** | Buildx build with GHA layer caching |
-| **Concurrency control** | Auto-cancels duplicate runs on the same branch |
-| **Job gating** | Docker build only runs after lint + test pass |
+| **Docker Hub publishing** | Buildx build + push with GHA layer caching |
+| **Automated deployment** | SSH to EC2, pull latest image, restart container |
+| **Health check** | Verifies `/api/status` responds after deploy |
+| **Auto-rollback** | Reverts to previous image if health check fails |
+| **Concurrency control** | Auto-cancels duplicate CI runs and queued deploys |
+| **Job gating** | Docker build after lint + test; deploy after CI passes |
 | **Caching** | pip, Ruff, pre-commit, and Docker layer caches |
 | **Timeouts** | Every job has a timeout to prevent stuck runs |
 | **Minimal permissions** | `contents: read`, `pull-requests: write` only |
@@ -117,6 +135,19 @@ push / PR
 | `check-added-large-files` | Block accidental large file commits |
 | `check-merge-conflict` | Detect unresolved merge markers |
 | `detect-private-key` | Prevent accidental key commits |
+
+## Required Secrets & Variables
+
+Configure these in your GitHub repository settings (**Settings > Secrets and variables > Actions**):
+
+| Name | Type | Description |
+|---|---|---|
+| `DOCKERHUB_USER` | Variable | Docker Hub username |
+| `DOCKERHUB_SECRETS` | Secret | Docker Hub access token |
+| `CODECOV_TOKEN` | Secret | Codecov upload token |
+| `EC2_HOST` | Secret | EC2 public IP or hostname |
+| `EC2_USER` | Secret | SSH username (e.g., `ubuntu`, `ec2-user`) |
+| `EC2_SSH_KEY` | Secret | Private SSH key for the EC2 instance |
 
 ## API
 
