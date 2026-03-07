@@ -1,7 +1,6 @@
 # GitHub Actions Dashboard
 
-![CI](https://github.com/<OWNER>/<REPO>/actions/workflows/python-matrix.yml/badge.svg)
-![CD](https://github.com/<OWNER>/<REPO>/actions/workflows/deploy.yml/badge.svg)
+![CI/CD](https://github.com/<OWNER>/<REPO>/actions/workflows/ci-cd.yml/badge.svg)
 [![codecov](https://codecov.io/gh/<OWNER>/<REPO>/branch/main/graph/badge.svg)](https://codecov.io/gh/<OWNER>/<REPO>)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
@@ -24,8 +23,7 @@ A minimal Flask application with a production-grade CI/CD pipeline built on GitH
 ├── .pre-commit-config.yaml         # Pre-commit hook configuration
 └── .github/
     └── workflows/
-        ├── python-matrix.yml       # CI pipeline
-        └── deploy.yml              # CD pipeline (EC2 deploy)
+        └── ci-cd.yml               # CI/CD pipeline
 ```
 
 ## Quick Start
@@ -74,6 +72,8 @@ pre-commit run --all-files
 
 ## CI/CD Pipeline
 
+Everything runs in a single workflow (`ci-cd.yml`):
+
 ```
 push / PR to main
     │
@@ -84,22 +84,12 @@ push / PR to main
     ├── dependency-review PR-only diff review of new dependencies
     │
     └── docker            Build & push to Docker Hub (after lint + test)
-                              │
-                              ▼
-                          deploy.yml
-                              │
-                              └── deploy        SSH into EC2, pull image,
-                                                restart container, health check,
-                                                auto-rollback on failure
+         │
+         └── deploy       SSH into EC2, pull image, restart container,
+                          health check, auto-rollback (push to main only)
 ```
 
-### CI (`python-matrix.yml`)
-
-Runs on every push/PR to `main`/`master`. Consists of 6 jobs.
-
-### CD (`deploy.yml`)
-
-Triggers automatically after CI succeeds on `main`/`master` via `workflow_run`. Deploys the latest Docker image to EC2.
+The deploy job only runs on pushes to `main`/`master` (skipped on PRs). It waits for the docker job to finish, which itself waits for lint + test.
 
 ### Key Features
 
@@ -116,7 +106,7 @@ Triggers automatically after CI succeeds on `main`/`master` via `workflow_run`. 
 | **Health check** | Verifies `/api/status` responds after deploy |
 | **Auto-rollback** | Reverts to previous image if health check fails |
 | **Concurrency control** | Auto-cancels duplicate CI runs and queued deploys |
-| **Job gating** | Docker build after lint + test; deploy after CI passes |
+| **Job gating** | lint + test -> docker -> deploy (sequential chain) |
 | **Caching** | pip, Ruff, pre-commit, and Docker layer caches |
 | **Timeouts** | Every job has a timeout to prevent stuck runs |
 | **Minimal permissions** | `contents: read`, `pull-requests: write` only |
