@@ -14,9 +14,7 @@ def status():
     return jsonify(
         {
             "status": "running",
-            "timestamp": datetime.datetime.now(
-                datetime.timezone.utc
-            ).isoformat(),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
     )
 
