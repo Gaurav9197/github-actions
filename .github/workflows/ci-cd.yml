@@ -153,13 +153,6 @@ jobs:
       - name: Run pip-audit
         run: pip-audit -r requirements.txt --format json --output pip-audit-report.json || true
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: trivy-db-${{ runner.os }}-
-
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -376,13 +369,6 @@ jobs:
 
       - name: Load Docker image
         run: docker load -i /tmp/image.tar
-
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/trivy
-          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: trivy-db-${{ runner.os }}-
 
       - name: Run Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.35.0
