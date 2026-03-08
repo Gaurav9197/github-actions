@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 
-A minimal Flask application with a production-grade CI/CD pipeline built on GitHub Actions. Demonstrates linting, type checking, security scanning, multi-version testing, dependency auditing, Docker Hub publishing, and automated EC2 deployment with rollback.
+A minimal Flask application with a production-grade DevSecOps CI/CD pipeline built on GitHub Actions. Integrates code quality, SAST, secrets detection, dependency scanning, Dockerfile analysis, container image scanning, SBOM generation, SARIF reporting, Docker Hub publishing, and automated EC2 deployment with rollback.
 
 > **Replace `<OWNER>/<REPO>` in the badge URLs above with your GitHub username and repository name.**
 
@@ -23,7 +23,7 @@ A minimal Flask application with a production-grade CI/CD pipeline built on GitH
 ├── .pre-commit-config.yaml         # Pre-commit hook configuration
 └── .github/
     └── workflows/
-        └── ci-cd.yml               # CI/CD pipeline
+        └── ci-cd.yml               # DevSecOps CI/CD pipeline
 ```
 
 ## Quick Start
@@ -59,7 +59,6 @@ coverage report
 ruff check .
 ruff format --check .
 mypy .
-bandit -r . --skip B104
 ```
 
 ### Pre-commit Hooks
@@ -72,45 +71,95 @@ pre-commit run --all-files
 
 ## CI/CD Pipeline
 
-Everything runs in a single workflow (`ci-cd.yml`):
+Everything runs in a single workflow (`ci-cd.yml`), triggered on push/PR to `main`/`master`, manual dispatch, and a weekly schedule (Sunday midnight UTC for security-only scans).
 
 ```
-push / PR to main
-    │
-    ├── lint              Ruff lint + format, mypy, bandit
-    ├── pre-commit        All pre-commit hooks
-    ├── test              Unit tests across Python 3.11 / 3.12 / 3.13
-    ├── dependency-scan   pip-audit against known vulnerabilities
-    ├── dependency-review PR-only diff review of new dependencies
-    │
-    └── docker            Build & push to Docker Hub (after lint + test)
-         │
-         └── deploy       SSH into EC2, pull image, restart container,
-                          health check, auto-rollback (push to main only)
+push / PR to main                          schedule (weekly)
+    │                                           │
+    ├── code-quality     Ruff + mypy            │ (skipped)
+    ├── pre-commit       All hooks              │ (skipped)
+    ├── test             Python 3.11/3.12/3.13  │ (skipped)
+    ├── sast-scan        Semgrep ──────────────►├── sast-scan
+    ├── secrets-scan     Gitleaks ─────────────►├── secrets-scan
+    ├── dependency-scan  pip-audit + Trivy ────►├── dependency-scan
+    ├── dockerfile-scan  Hadolint ─────────────►├── dockerfile-scan
+    ├── dependency-review (PR only)             │
+    │                                           │
+    └── docker-build ──► container-image-scan   │ (skipped)
+                              │                 │
+                         docker-push            │
+                              │                 │
+                           deploy               │
+                                                │
+    security-report ◄───────────────────────────┘
 ```
 
-The deploy job only runs on pushes to `main`/`master` (skipped on PRs). It waits for the docker job to finish, which itself waits for lint + test.
+### Pipeline Jobs
+
+| Job | Tool(s) | Purpose |
+|---|---|---|
+| `code-quality` | Ruff, mypy | Linting, formatting, type checking |
+| `sast-scan` | Semgrep | Static Application Security Testing (source code vulnerabilities) |
+| `secrets-scan` | Gitleaks (official action) | Detects hardcoded credentials, API keys, tokens |
+| `dependency-scan` | pip-audit, Trivy (filesystem) | Dependency vulnerability scanning (CVEs) |
+| `dependency-review` | GitHub Dependency Review | PR-only diff review of new/changed dependencies |
+| `dockerfile-scan` | Hadolint | Dockerfile best practices and misconfiguration analysis |
+| `pre-commit` | pre-commit | All configured pre-commit hooks |
+| `test` | unittest, coverage | Multi-version tests with 80% coverage gate |
+| `docker-build` | Docker Buildx | Build image, export as artifact for scanning |
+| `container-image-scan` | Trivy (image), Syft | Image vulnerability scan + SBOM generation (CycloneDX) |
+| `docker-push` | Docker | Load scanned image from artifact, push to Docker Hub |
+| `deploy` | SSH (appleboy) | Pull image on EC2, health check, auto-rollback |
+| `security-report` | jq, github-script | Aggregate SARIF findings into summary, comment on PR |
+
+### Security Gates
+
+The pipeline enforces security gates that block progression on findings:
+
+- **SAST**: Semgrep fails on any finding (`--error`)
+- **Secrets**: Gitleaks fails on any detected secret
+- **Dependencies**: Trivy fails on CRITICAL/HIGH CVEs (`exit-code: 1`)
+- **Dockerfile**: Hadolint fails on error-level issues (`failure-threshold: error`)
+- **Container image**: Trivy fails on CRITICAL/HIGH CVEs before push
+- **Push-after-scan**: Docker image is only pushed to the registry after the container scan passes
+
+### Reporting
+
+| Output | Destination |
+|---|---|
+| SARIF reports (Semgrep, Gitleaks, Trivy, Hadolint) | GitHub Security tab + workflow artifacts |
+| SBOM (CycloneDX JSON via Syft) | Workflow artifact |
+| pip-audit JSON report | Workflow artifact |
+| Security summary (markdown) | Job summary + PR comment + workflow artifact |
 
 ### Key Features
 
 | Feature | Detail |
 |---|---|
-| **Linting & formatting** | Ruff with GitHub annotations |
-| **Type checking** | mypy with Flask stubs |
-| **Security scanning** | Bandit (SAST) + pip-audit (SCA) + dependency-review |
+| **Code quality** | Ruff lint/format with GitHub annotations, mypy type checking |
+| **SAST** | Semgrep with `auto` + `security-audit` rulesets |
+| **Secrets detection** | Gitleaks official action with full history scan |
+| **Dependency scanning** | pip-audit + Trivy filesystem scan, hash-pinning validation |
+| **Dockerfile analysis** | Hadolint with SARIF output |
+| **Container image scanning** | Trivy image scan (SARIF + table), fails on CRITICAL/HIGH |
+| **SBOM generation** | Syft (CycloneDX JSON) for supply chain transparency |
+| **SARIF integration** | All scanners upload to GitHub Security tab |
+| **Security summary** | Aggregated report posted as PR comment and job summary |
+| **Build-scan-push flow** | Image is built, scanned, then pushed (never pushes unscanned images) |
 | **Multi-version testing** | Python 3.11, 3.12, 3.13 matrix |
-| **Coverage enforcement** | Fails if coverage drops below 80% |
-| **Coverage reporting** | Codecov with PR annotations |
-| **Docker Hub publishing** | Buildx build + push with GHA layer caching |
-| **Automated deployment** | SSH to EC2, pull latest image, restart container |
-| **Health check** | Verifies `/api/status` responds after deploy |
+| **Coverage enforcement** | Fails if coverage drops below 80% (Codecov integration) |
+| **Docker Hub publishing** | Buildx with GHA layer caching, multi-tag (sha, branch, latest) |
+| **Automated deployment** | SSH to EC2 with Docker-native health checks |
 | **Auto-rollback** | Reverts to previous image if health check fails |
+| **External health check** | Verifies deployment reachability from the runner |
+| **Scheduled security scans** | Weekly cron runs security jobs only (skips tests/build/deploy) |
+| **Trivy DB caching** | Vulnerability database cached across runs to avoid redundant downloads |
 | **Concurrency control** | Auto-cancels duplicate CI runs and queued deploys |
-| **Job gating** | lint + test -> docker -> deploy (sequential chain) |
-| **Caching** | pip, Ruff, pre-commit, and Docker layer caches |
+| **Deployment environment** | GitHub environment (`production`) with URL and protection rules |
+| **Deployment metadata** | Container inspect saved to `/opt/deploy-backups/` on each deploy |
 | **Timeouts** | Every job has a timeout to prevent stuck runs |
-| **Minimal permissions** | `contents: read`, `pull-requests: write` only |
-| **Pinned dependencies** | All actions and dev packages version-locked |
+| **Minimal permissions** | `contents: read`, `pull-requests: write`, `security-events: write` |
+| **Caching** | pip, Ruff, pre-commit, Docker layers, and Trivy DB |
 
 ### Pre-commit Hooks
 
@@ -138,6 +187,10 @@ Configure these in your GitHub repository settings (**Settings > Secrets and var
 | `EC2_HOST` | Secret | EC2 public IP or hostname |
 | `EC2_USER` | Secret | SSH username (e.g., `ubuntu`, `ec2-user`) |
 | `EC2_SSH_KEY` | Secret | Private SSH key for the EC2 instance |
+
+`GITHUB_TOKEN` is provided automatically by GitHub Actions (used by Gitleaks, SARIF uploads, PR comments).
+
+> **Note:** Gitleaks official action is free for public repositories. For private repositories, set a `GITLEAKS_LICENSE` secret (see [gitleaks-action docs](https://github.com/gitleaks/gitleaks-action)).
 
 ## API
 
