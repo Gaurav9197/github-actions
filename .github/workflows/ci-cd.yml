@@ -373,7 +373,7 @@ jobs:
       - name: Run Trivy image scan (SARIF)
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          input: /tmp/image.tar
+          image-ref: ${{ needs.docker-build.outputs.image-ref }}
           format: sarif
           output: trivy-image.sarif
           severity: CRITICAL,HIGH
@@ -391,7 +391,7 @@ jobs:
         if: always()
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          input: /tmp/image.tar
+          image-ref: ${{ needs.docker-build.outputs.image-ref }}
           format: table
           severity: CRITICAL,HIGH,MEDIUM
           ignore-unfixed: 'true'
@@ -466,14 +466,13 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          script_stop: true
           script: |
             set -euo pipefail
 
             IMAGE="${{ vars.DOCKERHUB_USER }}/github-actions-dashboard:latest"
             CONTAINER="github-actions-dashboard"
             PORT="5000"
-            BACKUP_DIR="/opt/deploy-backups"
+            BACKUP_DIR="$HOME/deploy-backups"
 
             mkdir -p "$BACKUP_DIR"
 
