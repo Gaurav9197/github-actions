@@ -1,0 +1,7 @@
+ruff
+bandit
+mypy
+types-flask
+coverage
+pre-commit
+pip-audit
