@@ -1,0 +1,72 @@
+name: Container Scan
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        description: Docker image reference to scan
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  container-scan:
+    name: Trivy + Syft SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/image.tar
+
+      - name: Run Trivy image scan (SARIF)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ inputs.image-ref }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: 'true'
+
+      - name: Upload Trivy Image SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Run Trivy image scan (table for logs)
+        if: always()
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ inputs.image-ref }}
+          format: table
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: 'true'
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0.23.0
+        if: always()
+        with:
+          image: ${{ inputs.image-ref }}
+          format: cyclonedx-json
+          artifact-name: sbom-cyclonedx.json
+          upload-release-assets: false
+
+      - name: Upload container scan reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-scan-reports
+          path: trivy-image.sarif
+          retention-days: 30

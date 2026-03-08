@@ -1,0 +1,85 @@
+name: Security Report
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security-report:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Download all scan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*report*'
+          path: scan-results/
+
+      - name: Generate security summary
+        run: |
+          cat <<'HEADER' > SECURITY_SUMMARY.md
+          # Security Scan Summary
+
+          **Workflow:** `${{ github.workflow }}` | **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Triggered by:** `${{ github.event_name }}` on `${{ github.ref_name }}` | **Commit:** `${{ github.sha }}`
+
+          ## Scan Results
+
+          | Scanner | Findings |
+          |---------|----------|
+          HEADER
+
+          for sarif in $(find scan-results/ -name '*.sarif' 2>/dev/null); do
+            SCANNER=$(basename "$(dirname "$sarif")" | sed 's/-report$//' | sed 's/-scan-reports$//')
+            COUNT=$(jq '[.runs[].results | length] | add // 0' "$sarif" 2>/dev/null || echo "N/A")
+            echo "| $SCANNER | $COUNT |" >> SECURITY_SUMMARY.md
+          done
+
+          echo "" >> SECURITY_SUMMARY.md
+          echo "---" >> SECURITY_SUMMARY.md
+          echo "*Full results available in the [GitHub Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) and as workflow artifacts.*" >> SECURITY_SUMMARY.md
+
+          cat SECURITY_SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload security summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary
+          path: SECURITY_SUMMARY.md
+          retention-days: 30
+
+      - name: Comment security summary on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('SECURITY_SUMMARY.md', 'utf8');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const marker = '<!-- security-summary -->';
+            const body = `${marker}\n${summary}`;
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

@@ -7,7 +7,7 @@ on:
     branches: [master, main]
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0' # Weekly security scan (Sunday midnight UTC)
+    - cron: '0 0 * * 0'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,609 +21,77 @@ permissions:
 jobs:
   # ─── Code Quality ──────────────────────────────────────────
   code-quality:
-    name: Code Quality (Ruff + mypy)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: github.event_name != 'schedule'
+    uses: ./.github/workflows/code-quality.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Cache Ruff
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ruff
-          key: ruff-${{ runner.os }}-${{ hashFiles('**/pyproject.toml', '**/.ruff.toml', '**/ruff.toml') }}
-          restore-keys: ruff-${{ runner.os }}-
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-
-      - name: Ruff lint
-        run: ruff check . --output-format=github
-
-      - name: Ruff format check
-        run: ruff format --check .
-
-      - name: Type checking (mypy)
-        run: mypy .
-
-  # ─── SAST Scan (Semgrep) ───────────────────────────────────
+  # ─── Security Scans ────────────────────────────────────────
   sast-scan:
-    name: SAST (Semgrep)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    container:
-      image: semgrep/semgrep
+    uses: ./.github/workflows/sast-scan.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Semgrep scan
-        run: semgrep scan --config auto --config p/security-audit --sarif -o semgrep.sarif --error
-
-      - name: Upload Semgrep SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: semgrep.sarif
-          category: semgrep
-
-      - name: Upload Semgrep report artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: semgrep-report
-          path: semgrep.sarif
-          retention-days: 30
-
-  # ─── Secrets Scan (Gitleaks) ───────────────────────────────
   secrets-scan:
-    name: Secrets Detection (Gitleaks)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    uses: ./.github/workflows/secrets-scan.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Gitleaks SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: results.sarif
-          category: gitleaks
-
-      - name: Upload Gitleaks report artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gitleaks-report
-          path: results.sarif
-          retention-days: 30
-
-  # ─── Dependency Scan (pip-audit + Trivy) ───────────────────
   dependency-scan:
-    name: Dependency Scanning (pip-audit + Trivy)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    uses: ./.github/workflows/dependency-scan.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Verify dependency integrity
-        run: |
-          if ! grep -q '\-\-hash' requirements.txt 2>/dev/null; then
-            echo "::warning::requirements.txt does not use hash pinning — vulnerable to supply chain attacks"
-            echo "::warning::Generate locked requirements with: pip-compile --generate-hashes requirements.in"
-          fi
-
-      - name: Install pip-audit
-        run: pip install pip-audit
-
-      - name: Run pip-audit
-        run: pip-audit -r requirements.txt --format json --output pip-audit-report.json || true
-
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-fs.sarif
-          severity: CRITICAL,HIGH
-          exit-code: '1'
-          ignore-unfixed: 'true'
-
-      - name: Upload Trivy SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-dependency
-
-      - name: Upload dependency scan reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dependency-scan-reports
-          path: |
-            pip-audit-report.json
-            trivy-fs.sarif
-          retention-days: 30
-
-  # ─── Dependency Review (PR only) ───────────────────────────
   dependency-review:
-    name: Dependency Review
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/dependency-review.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Dependency review
-        uses: actions/dependency-review-action@v4
-
-  # ─── Dockerfile Scan (Hadolint) ────────────────────────────
   dockerfile-scan:
-    name: Dockerfile Security (Hadolint)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Hadolint
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          dockerfile: Dockerfile
-          format: sarif
-          output-file: hadolint.sarif
-          failure-threshold: error
-
-      - name: Upload Hadolint SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: hadolint.sarif
-          category: hadolint
-
-      - name: Upload Hadolint report artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: hadolint-report
-          path: hadolint.sarif
-          retention-days: 30
+    uses: ./.github/workflows/dockerfile-scan.yml
+    secrets: inherit
 
   # ─── Pre-commit ────────────────────────────────────────────
   pre-commit:
-    name: Pre-commit hooks
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: github.event_name != 'schedule'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Cache pre-commit
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-          restore-keys: pre-commit-${{ runner.os }}-
-
-      - name: Install pre-commit
-        run: pip install pre-commit
-
-      - name: Run pre-commit
-        run: pre-commit run --all-files
+    uses: ./.github/workflows/pre-commit.yml
+    secrets: inherit
 
   # ─── Tests ─────────────────────────────────────────────────
   test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     if: github.event_name != 'schedule'
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.11', '3.12', '3.13']
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-
-      - name: Run tests with coverage
-        run: |
-          coverage run -m unittest discover
-          coverage report --fail-under=80
-          coverage xml -o coverage.xml
-
-      - name: Upload coverage (Codecov)
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+    uses: ./.github/workflows/test.yml
+    secrets: inherit
 
   # ─── Docker Build ──────────────────────────────────────────
   docker-build:
-    name: Docker Build
     needs: [code-quality, sast-scan, secrets-scan, dependency-scan, dockerfile-scan, test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    outputs:
-      image-ref: ${{ steps.set-image-ref.outputs.image }}
-      image-tags: ${{ steps.meta.outputs.tags }}
+    uses: ./.github/workflows/docker-build.yml
+    secrets: inherit
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ vars.DOCKERHUB_USER }}/github-actions-dashboard
-          tags: |
-            type=sha,prefix=
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build image (export for scanning)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          outputs: type=docker,dest=/tmp/image.tar
-
-      - name: Upload image artifact for scanning
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image
-          path: /tmp/image.tar
-          retention-days: 1
-
-      - name: Set image reference output
-        id: set-image-ref
-        run: echo "image=$(echo '${{ steps.meta.outputs.tags }}' | head -n1)" >> "$GITHUB_OUTPUT"
-
-  # ─── Container Image Scan (Trivy + SBOM) ───────────────────
-  container-image-scan:
-    name: Container Scan (Trivy + Syft SBOM)
+  # ─── Container Scan ────────────────────────────────────────
+  container-scan:
     needs: [docker-build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    uses: ./.github/workflows/container-scan.yml
+    with:
+      image-ref: ${{ needs.docker-build.outputs.image-ref }}
+    secrets: inherit
 
-    steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: docker load -i /tmp/image.tar
-
-      - name: Run Trivy image scan (SARIF)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ needs.docker-build.outputs.image-ref }}
-          format: sarif
-          output: trivy-image.sarif
-          severity: CRITICAL,HIGH
-          exit-code: '0'
-          ignore-unfixed: 'true'
-
-      - name: Upload Trivy Image SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
-
-      - name: Run Trivy image scan (table for logs)
-        if: always()
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ needs.docker-build.outputs.image-ref }}
-          format: table
-          severity: CRITICAL,HIGH,MEDIUM
-          ignore-unfixed: 'true'
-
-      - name: Generate SBOM (Syft)
-        uses: anchore/sbom-action@v0.23.0
-        if: always()
-        with:
-          image: ${{ needs.docker-build.outputs.image-ref }}
-          format: cyclonedx-json
-          artifact-name: sbom-cyclonedx.json
-          upload-release-assets: false
-
-      - name: Upload container scan reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: container-scan-reports
-          path: trivy-image.sarif
-          retention-days: 30
-
-  # ─── Docker Push (after scan passes) ───────────────────────
+  # ─── Docker Push ───────────────────────────────────────────
   docker-push:
-    name: Push to Docker Hub
-    needs: [docker-build, container-image-scan]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    needs: [docker-build, container-scan]
     if: github.event_name == 'push'
-
-    steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: docker-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: docker load -i /tmp/image.tar
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USER }}
-          password: ${{ secrets.DOCKERHUB_SECRETS }}
-
-      - name: Push all tags to Docker Hub
-        env:
-          IMAGE_TAGS: ${{ needs.docker-build.outputs.image-tags }}
-        run: |
-          echo "$IMAGE_TAGS" | while IFS= read -r tag; do
-            [ -n "$tag" ] && echo "Pushing $tag" && docker push "$tag"
-          done
+    uses: ./.github/workflows/docker-push.yml
+    with:
+      image-tags: ${{ needs.docker-build.outputs.image-tags }}
+    secrets: inherit
 
   # ─── Deploy ────────────────────────────────────────────────
   deploy:
-    name: Deploy to EC2
     needs: [docker-push]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     if: github.event_name == 'push'
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: true
-    environment:
-      name: production
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
 
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            set -euo pipefail
-
-            IMAGE="${{ vars.DOCKERHUB_USER }}/github-actions-dashboard:latest"
-            CONTAINER="github-actions-dashboard"
-            PORT="5000"
-            BACKUP_DIR="$HOME/deploy-backups"
-
-            mkdir -p "$BACKUP_DIR"
-
-            echo "==> Logging in to Docker Hub"
-            echo "${{ secrets.DOCKERHUB_SECRETS }}" | docker login -u "${{ vars.DOCKERHUB_USER }}" --password-stdin
-
-            echo "==> Pulling latest image"
-            docker pull "$IMAGE"
-
-            echo "==> Saving previous container info for rollback"
-            OLD_IMAGE=""
-            if docker inspect "$CONTAINER" >/dev/null 2>&1; then
-              OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CONTAINER")
-              echo "    Previous image: $OLD_IMAGE"
-            fi
-
-            echo "==> Stopping old container"
-            docker stop "$CONTAINER" 2>/dev/null || true
-            docker rm "$CONTAINER" 2>/dev/null || true
-
-            echo "==> Starting new container"
-            docker run -d \
-              --name "$CONTAINER" \
-              --restart unless-stopped \
-              -p "$PORT:5000" \
-              --health-cmd="python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')\" || exit 1" \
-              --health-interval=10s \
-              --health-timeout=5s \
-              --health-retries=3 \
-              "$IMAGE"
-
-            echo "==> Waiting for health check"
-            HEALTHY=false
-            for i in $(seq 1 20); do
-              HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "starting")
-              if [ "$HEALTH_STATUS" = "healthy" ]; then
-                HEALTHY=true
-                break
-              fi
-              echo "    Attempt $i/20 — status: $HEALTH_STATUS"
-              sleep 3
-            done
-
-            if [ "$HEALTHY" = true ]; then
-              echo "==> Deploy succeeded — container is healthy"
-              docker inspect "$CONTAINER" > "$BACKUP_DIR/deploy-$(date +%Y%m%d-%H%M%S).json"
-              docker logout
-              exit 0
-            fi
-
-            echo "==> Health check failed — rolling back"
-            docker logs "$CONTAINER" --tail 50
-
-            docker stop "$CONTAINER" 2>/dev/null || true
-            docker rm "$CONTAINER" 2>/dev/null || true
-
-            if [ -n "$OLD_IMAGE" ]; then
-              echo "==> Restarting previous image: $OLD_IMAGE"
-              docker run -d \
-                --name "$CONTAINER" \
-                --restart unless-stopped \
-                -p "$PORT:5000" \
-                "$OLD_IMAGE"
-              echo "==> Rollback complete"
-            else
-              echo "==> No previous image to roll back to"
-            fi
-
-            docker logout
-            exit 1
-
-      - name: Verify deployment externally
-        run: |
-          sleep 10
-          curl -sf "http://${{ secrets.EC2_HOST }}:5000/api/status" || \
-            (echo "::error::External health check failed — deployment may be unreachable" && exit 1)
-
-  # ─── Security Summary Report ────────────────────────────────
+  # ─── Security Summary ─────────────────────────────────────
   security-report:
-    name: Security Summary
-    needs: [sast-scan, secrets-scan, dependency-scan, dockerfile-scan, container-image-scan]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    needs: [sast-scan, secrets-scan, dependency-scan, dockerfile-scan, container-scan]
     if: always()
-
-    steps:
-      - name: Download all scan artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '*report*'
-          path: scan-results/
-
-      - name: Generate security summary
-        run: |
-          cat <<'HEADER' > SECURITY_SUMMARY.md
-          # Security Scan Summary
-
-          **Workflow:** `${{ github.workflow }}` | **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          **Triggered by:** `${{ github.event_name }}` on `${{ github.ref_name }}` | **Commit:** `${{ github.sha }}`
-
-          ## Scan Results
-
-          | Scanner | Findings |
-          |---------|----------|
-          HEADER
-
-          for sarif in $(find scan-results/ -name '*.sarif' 2>/dev/null); do
-            SCANNER=$(basename "$(dirname "$sarif")" | sed 's/-report$//' | sed 's/-scan-reports$//')
-            COUNT=$(jq '[.runs[].results | length] | add // 0' "$sarif" 2>/dev/null || echo "N/A")
-            echo "| $SCANNER | $COUNT |" >> SECURITY_SUMMARY.md
-          done
-
-          echo "" >> SECURITY_SUMMARY.md
-          echo "---" >> SECURITY_SUMMARY.md
-          echo "*Full results available in the [GitHub Security tab](${{ github.server_url }}/${{ github.repository }}/security/code-scanning) and as workflow artifacts.*" >> SECURITY_SUMMARY.md
-
-          cat SECURITY_SUMMARY.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload security summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-summary
-          path: SECURITY_SUMMARY.md
-          retention-days: 30
-
-      - name: Comment security summary on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('SECURITY_SUMMARY.md', 'utf8');
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const marker = '<!-- security-summary -->';
-            const body = `${marker}\n${summary}`;
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+    uses: ./.github/workflows/security-report.yml
+    secrets: inherit

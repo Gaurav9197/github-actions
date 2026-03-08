@@ -1,0 +1,107 @@
+name: Deploy
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: true
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+
+            IMAGE="${{ vars.DOCKERHUB_USER }}/github-actions-dashboard:latest"
+            CONTAINER="github-actions-dashboard"
+            PORT="5000"
+            BACKUP_DIR="$HOME/deploy-backups"
+
+            mkdir -p "$BACKUP_DIR"
+
+            echo "==> Logging in to Docker Hub"
+            echo "${{ secrets.DOCKERHUB_SECRETS }}" | docker login -u "${{ vars.DOCKERHUB_USER }}" --password-stdin
+
+            echo "==> Pulling latest image"
+            docker pull "$IMAGE"
+
+            echo "==> Saving previous container info for rollback"
+            OLD_IMAGE=""
+            if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+              OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' "$CONTAINER")
+              echo "    Previous image: $OLD_IMAGE"
+            fi
+
+            echo "==> Stopping old container"
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm "$CONTAINER" 2>/dev/null || true
+
+            echo "==> Starting new container"
+            docker run -d \
+              --name "$CONTAINER" \
+              --restart unless-stopped \
+              -p "$PORT:5000" \
+              --health-cmd="python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/api/status')\" || exit 1" \
+              --health-interval=10s \
+              --health-timeout=5s \
+              --health-retries=3 \
+              "$IMAGE"
+
+            echo "==> Waiting for health check"
+            HEALTHY=false
+            for i in $(seq 1 20); do
+              HEALTH_STATUS=$(docker inspect --format='{{.State.Health.Status}}' "$CONTAINER" 2>/dev/null || echo "starting")
+              if [ "$HEALTH_STATUS" = "healthy" ]; then
+                HEALTHY=true
+                break
+              fi
+              echo "    Attempt $i/20 — status: $HEALTH_STATUS"
+              sleep 3
+            done
+
+            if [ "$HEALTHY" = true ]; then
+              echo "==> Deploy succeeded — container is healthy"
+              docker inspect "$CONTAINER" > "$BACKUP_DIR/deploy-$(date +%Y%m%d-%H%M%S).json"
+              docker logout
+              exit 0
+            fi
+
+            echo "==> Health check failed — rolling back"
+            docker logs "$CONTAINER" --tail 50
+
+            docker stop "$CONTAINER" 2>/dev/null || true
+            docker rm "$CONTAINER" 2>/dev/null || true
+
+            if [ -n "$OLD_IMAGE" ]; then
+              echo "==> Restarting previous image: $OLD_IMAGE"
+              docker run -d \
+                --name "$CONTAINER" \
+                --restart unless-stopped \
+                -p "$PORT:5000" \
+                "$OLD_IMAGE"
+              echo "==> Rollback complete"
+            else
+              echo "==> No previous image to roll back to"
+            fi
+
+            docker logout
+            exit 1
+
+      - name: Verify deployment externally
+        run: |
+          sleep 10
+          curl -sf "http://${{ secrets.EC2_HOST }}:5000/api/status" || \
+            (echo "::error::External health check failed — deployment may be unreachable" && exit 1)
