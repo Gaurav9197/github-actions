@@ -468,7 +468,7 @@ jobs:
       cancel-in-progress: true
     environment:
       name: production
-      url: http://${{ secrets.EC2_HOST }}:5000
+      url: http://34.217.50.212:5000
 
     steps:
       - name: Deploy via SSH
